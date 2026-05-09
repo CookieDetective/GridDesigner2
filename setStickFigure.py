@@ -14,6 +14,7 @@ JSON per frame contains:
 """
 
 import json
+import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
@@ -42,10 +43,43 @@ class SetStickFigure(InteractiveGrid):
         "left_shoulder", "right_shoulder", "shoulder_center",
         "left_elbow", "right_elbow",
         "left_wrist", "right_wrist",
+        "left_hand", "right_hand",
         "left_hip", "right_hip", "hip_center",
         "left_knee", "right_knee",
         "left_ankle", "right_ankle",
+        "left_foot", "right_foot"
     ]
+
+    # Compatibility aliases for external model/template files.
+    JOINT_ALIASES = {
+        "l_shoulder": "left_shoulder",
+        "r_shoulder": "right_shoulder",
+        "l_elbow": "left_elbow",
+        "r_elbow": "right_elbow",
+        "l_wrist": "left_wrist",
+        "r_wrist": "right_wrist",
+        "l_hand": "left_hand",
+        "r_hand": "right_hand",
+        "l_hip": "left_hip",
+        "r_hip": "right_hip",
+        "l_knee": "left_knee",
+        "r_knee": "right_knee",
+        "l_ankle": "left_ankle",
+        "r_ankle": "right_ankle",
+        "l_foot": "left_foot",
+        "r_foot": "right_foot",
+        "hip": "hip_center",
+        "neck": "shoulder_center",
+        "head_c": "head",
+    }
+
+    # Startup template/model to preload when available
+    DEFAULT_TEMPLATE_FILENAME = "secondModel.json"
+
+    # GUI-only joint marker colors (never serialized to JSON)
+    JOINT_GUI_COLORS = {
+        "default": "red",
+    }
 
     def __init__(
         self,
@@ -102,6 +136,9 @@ class SetStickFigure(InteractiveGrid):
         # Initial draw
         self.draw_grid()
 
+        # Preload a default template/model when present.
+        self._load_default_template_if_available()
+
     # -------------------------
     # Sidebar
     # -------------------------
@@ -129,11 +166,11 @@ class SetStickFigure(InteractiveGrid):
         tk.Button(btn_row, text="Next  ]", command=self.next_joint).pack(side=tk.LEFT, padx=(6, 0))
         tk.Button(btn_row, text="Clear joints", command=self.clear_joints).pack(side=tk.RIGHT)
 
-        # Live joint position list
+        # Live joint position list and selection
         tk.Label(joint_box, text="Positions:").pack(anchor="w", padx=6)
-        self._joints_text = tk.Text(joint_box, height=10, width=28)
-        self._joints_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 6))
-        self._joints_text.configure(state="disabled")
+        self._joint_listbox = tk.Listbox(joint_box, height=10, width=28)
+        self._joint_listbox.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 6))
+        self._joint_listbox.bind('<<ListboxSelect>>', self.on_joint_select)
 
         # Offset controls
         off_box = tk.LabelFrame(parent, text="World translation (saved in JSON)")
@@ -163,15 +200,35 @@ class SetStickFigure(InteractiveGrid):
         # Save/load
         io_box = tk.LabelFrame(parent, text="Frame JSON")
         io_box.pack(fill=tk.X, padx=8, pady=(0, 8))
-        tk.Button(io_box, text="Load Frame...", command=self.load_frame_dialog).pack(fill=tk.X, padx=6, pady=(6, 2))
+        tk.Button(io_box, text="Load Model/Template...", command=self.load_frame_dialog).pack(fill=tk.X, padx=6, pady=(6, 2))
         tk.Button(io_box, text="Save Frame...", command=self.save_frame_dialog).pack(fill=tk.X, padx=6, pady=(2, 6))
 
         # Populate joint list initially
         self._refresh_joint_list()
 
     def _sync_offset_from_ui(self):
-        self.offset_x = int(self._offset_x_var.get())
-        self.offset_y = int(self._offset_y_var.get())
+        if hasattr(self, "_offset_x_var"):
+            self.offset_x = int(self._offset_x_var.get())
+        if hasattr(self, "_offset_y_var"):
+            self.offset_y = int(self._offset_y_var.get())
+
+    # -------------------------
+    # Startup template loading
+    # -------------------------
+    def _default_template_path(self) -> str:
+        here = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(here, self.DEFAULT_TEMPLATE_FILENAME)
+
+    def _load_default_template_if_available(self):
+        path = self._default_template_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.load_frame_json_dict(data)
+        except Exception as e:
+            messagebox.showwarning("Default model not loaded", f"Could not load default model:\n{path}\n\n{e}")
 
     # -------------------------
     # Joint selection + setting
@@ -189,6 +246,16 @@ class SetStickFigure(InteractiveGrid):
 
     def prev_joint(self):
         self.current_joint_index = (self.current_joint_index - 1) % len(self.JOINT_ORDER)
+        self._update_joint_ui()
+
+    def on_joint_select(self, event):
+        if not hasattr(self, "_joint_listbox"):
+            return
+        selection = self._joint_listbox.curselection()
+        if not selection:
+            return
+        idx = int(selection[0])
+        self.current_joint_index = idx
         self._update_joint_ui()
 
     def clear_joints(self):
@@ -209,6 +276,37 @@ class SetStickFigure(InteractiveGrid):
         # Update overlay + list
         self.draw_grid()
         self._refresh_joint_list()
+
+    # -------------------------
+    # Joint marker overlay (GUI only)
+    # -------------------------
+    def _joint_gui_color(self, joint_name: str) -> str:
+        return self.JOINT_GUI_COLORS.get(joint_name, self.JOINT_GUI_COLORS["default"])
+
+    def _joint_points_for_overlay(self):
+        points = dict(self.joints)
+        if "shoulder_center" not in points and all(j in self.joints for j in ("left_shoulder", "right_shoulder")):
+            points["shoulder_center"] = self.get_shoulder_center()
+        if "hip_center" not in points and all(j in self.joints for j in ("left_hip", "right_hip")):
+            points["hip_center"] = self.get_hip_center()
+        return points
+
+    def _draw_joint_overlays(self):
+        ox = getattr(self, "_draw_offset_x", 0)
+        oy = getattr(self, "_draw_offset_y", 0)
+        r = max(2, int(self.cell_size * 0.22))
+
+        for name, pt in self._joint_points_for_overlay().items():
+            x = int(pt.get("x", -1))
+            y = int(pt.get("y", -1))
+            if not (0 <= x < self.grid_width and 0 <= y < self.grid_height):
+                continue
+
+            cx = ox + x * self.cell_size + (self.cell_size / 2)
+            cy = oy + y * self.cell_size + (self.cell_size / 2)
+            color = self._joint_gui_color(name)
+
+            self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline="")
 
     # -------------------------
     # Derived centers
@@ -237,36 +335,40 @@ class SetStickFigure(InteractiveGrid):
     # Joint list UI
     # -------------------------
     def _refresh_joint_list(self):
-        """Update the sidebar text box to list joints and positions."""
-        if not hasattr(self, "_joints_text"):
+        """Populate listbox with joint info and select current joint."""
+        if not hasattr(self, "_joint_listbox"):
             return
 
-        lines = []
-        # Always show joints in JOINT_ORDER for consistency
+        # Clear existing items
+        self._joint_listbox.delete(0, tk.END)
+
         for name in self.JOINT_ORDER:
             if name in self.joints:
                 x = int(self.joints[name]["x"])
                 y = int(self.joints[name]["y"])
-                lines.append(f"{name:16s} : ({x:2d}, {y:2d})")
+                display = f"{name:16s} : ({x:2d}, {y:2d})"
             else:
-                # Show derived center joints with '*' when missing and derivable
                 if name == "shoulder_center" and all(j in self.joints for j in ("left_shoulder", "right_shoulder")):
                     pt = self.get_shoulder_center()
-                    lines.append(f"{'shoulder_center*':16s} : ({pt['x']:2d}, {pt['y']:2d})")
+                    display = f"{ 'shoulder_center*':16s } : ({pt['x']:2d}, {pt['y']:2d})"
                 elif name == "hip_center" and all(j in self.joints for j in ("left_hip", "right_hip")):
                     pt = self.get_hip_center()
-                    lines.append(f"{'hip_center*':16s} : ({pt['x']:2d}, {pt['y']:2d})")
+                    display = f"{'hip_center*':16s} : ({pt['x']:2d}, {pt['y']:2d})"
                 else:
-                    lines.append(f"{name:16s} : (  -,   -)")
+                    display = f"{name:16s} : (  -,   -)"
+            self._joint_listbox.insert(tk.END, display)
 
-        # Also show offset
-        lines.append("")
-        lines.append(f"offset_x/y        : ({self.offset_x}, {self.offset_y})")
+        # Add offset info as a separate item
+        self._joint_listbox.insert(tk.END, "")
+        self._joint_listbox.insert(tk.END, f"offset_x/y : ({self.offset_x}, {self.offset_y})")
 
-        self._joints_text.configure(state="normal")
-        self._joints_text.delete("1.0", "end")
-        self._joints_text.insert("1.0", "\n".join(lines))
-        self._joints_text.configure(state="disabled")
+        # Select current joint in listbox
+        try:
+            self._joint_listbox.select_clear(0, tk.END)
+            self._joint_listbox.select_set(self.current_joint_index)
+            self._joint_listbox.see(self.current_joint_index)
+        except Exception:
+            pass
 
     # -------------------------
     # Redraw hook
@@ -274,20 +376,72 @@ class SetStickFigure(InteractiveGrid):
     def draw_grid(self):
         """Draw grid + refresh list (so positions update even after zoom)."""
         super().draw_grid()
+        self._draw_joint_overlays()
         self._refresh_joint_list()
 
     # -------------------------
     # JSON I/O
     # -------------------------
+    def _clear_grid_to_default(self):
+        self.grid = [[self.default_color for _ in range(self.grid_width)] for _ in range(self.grid_height)]
+
+    def _boxes_from_grid(self):
+        boxes = {}
+        for y in range(self.grid_height):
+            for x in range(self.grid_width):
+                val = int(self.grid[y][x])
+                if val != self.default_color:
+                    boxes[f"{x},{y}"] = val
+        return boxes
+
+    def _apply_boxes_to_grid(self, boxes):
+        if not isinstance(boxes, dict):
+            return
+        for key, raw_val in boxes.items():
+            if not isinstance(key, str) or "," not in key:
+                continue
+            x_str, y_str = key.split(",", 1)
+            try:
+                x = int(x_str.strip())
+                y = int(y_str.strip())
+                val = int(raw_val)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= x < self.grid_width and 0 <= y < self.grid_height:
+                self.grid[y][x] = val
+
+    def _normalize_joint_name(self, name: str) -> str:
+        s = str(name)
+        return self.JOINT_ALIASES.get(s, s)
+
+    def _normalize_joint_point(self, pt):
+        if isinstance(pt, dict) and "x" in pt and "y" in pt:
+            return {"x": int(pt["x"]), "y": int(pt["y"])}
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            return {"x": int(pt[0]), "y": int(pt[1])}
+        return None
+
     def to_frame_json_dict(self):
         self._sync_offset_from_ui()
         self._validate_mandatory_joints()
 
+        boxes = self._boxes_from_grid()
+        # Export joints in external-template-friendly [x, y] format.
+        joints_xy = {
+            name: [int(pt["x"]), int(pt["y"])]
+            for name, pt in self.joints.items()
+        }
+
         return {
             "version": 1,
+            "name": "frame",
             "grid": {"width": int(self.grid_width), "height": int(self.grid_height)},
+            "grid_width": int(self.grid_width),
+            "grid_height": int(self.grid_height),
+            "default_color": int(self.default_color),
             "offset": {"x": int(self.offset_x), "y": int(self.offset_y)},
-            "joints": self.joints,
+            "joints": joints_xy,
+            "boxes": boxes,
             "style": {"color_index": int(self.figure_color_index)},
         }
 
@@ -296,7 +450,37 @@ class SetStickFigure(InteractiveGrid):
         if not isinstance(joints, dict):
             raise ValueError("Invalid JSON: missing 'joints' dict")
 
-        self.joints = joints
+        # Parse + normalize joints so GUI math is always int-safe.
+        parsed_joints = {}
+        for name, pt in joints.items():
+            canonical = self._normalize_joint_name(name)
+            normalized_pt = self._normalize_joint_point(pt)
+            if normalized_pt is None:
+                continue
+            parsed_joints[canonical] = normalized_pt
+        self.joints = parsed_joints
+
+        grid_info = data.get("grid") or {}
+        new_w = self.grid_width
+        new_h = self.grid_height
+        if isinstance(grid_info, dict):
+            new_w = int(grid_info.get("width", new_w))
+            new_h = int(grid_info.get("height", new_h))
+        if "grid_width" in data:
+            new_w = int(data["grid_width"])
+        if "grid_height" in data:
+            new_h = int(data["grid_height"])
+
+        if "default_color" in data:
+            self.default_color = int(data["default_color"])
+
+        if new_w > 0 and new_h > 0 and (new_w != self.grid_width or new_h != self.grid_height):
+            self.grid_width = new_w
+            self.grid_height = new_h
+            self._update_scrollregion()
+
+        self._clear_grid_to_default()
+        self._apply_boxes_to_grid(data.get("boxes"))
 
         off = data.get("offset") or {}
         self.offset_x = int(off.get("x", 0))
@@ -332,7 +516,7 @@ class SetStickFigure(InteractiveGrid):
 
     def load_frame_dialog(self):
         path = filedialog.askopenfilename(
-            title="Load Frame JSON",
+            title="Load Model/Template JSON",
             filetypes=[("JSON", "*.json")],
         )
         if not path:
@@ -352,7 +536,7 @@ if __name__ == "__main__":
 
     app = SetStickFigure(
         root,
-        grid_size=20,
+        grid_size=30,
         cell_size=28,
         show_sidebar=True,
     )
