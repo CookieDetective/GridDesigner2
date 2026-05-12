@@ -338,6 +338,12 @@ class SetStickFigure(InteractiveGrid):
         """Populate listbox with joint info and select current joint."""
         if not hasattr(self, "_joint_listbox"):
             return
+        
+        try:
+            if not self._joint_listbox.winfo_exists():
+                return
+        except Exception:
+            return
 
         # Clear existing items
         self._joint_listbox.delete(0, tk.END)

@@ -172,16 +172,18 @@ class InteractiveGrid:
 
     def set_active_color(self, color_index: int):
         self.active_color = color_index
-        if hasattr(self, "_active_color_var"):
-            self._active_color_var.set(str(color_index))
+        color_var = getattr(self, "_active_color_var", None)
+        if color_var is not None:
+            color_var.set(str(color_index))
 
     # -----------------
     # Eyedropper tool
     # -----------------
     def toggle_eyedropper(self, event=None):
         self.eyedropper_enabled = not self.eyedropper_enabled
-        if hasattr(self, "_eyedropper_var"):
-            self._eyedropper_var.set("ON" if self.eyedropper_enabled else "OFF")
+        eyedropper_var = getattr(self, "_eyedropper_var", None)
+        if eyedropper_var is not None:
+            eyedropper_var.set("ON" if self.eyedropper_enabled else "OFF")
 
     # -----------------------
     # Zoom / scrolling support
